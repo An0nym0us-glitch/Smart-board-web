@@ -1,0 +1,131 @@
+name: Build and test
+
+# Continuous integration for every branch push and pull request. Releases are made by
+# release.yml, which reuses this workflow (workflow_call) to build and test the installer
+# before it creates the release. This workflow never creates or edits releases, and tag
+# pushes are left to release.yml so a tag is not built twice.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows (MSVC, Qt 5.15)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt 5.15
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.15.2'
+          arch: 'win64_msvc2019_64'
+          cache: true
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      # Poppler (pdftoppm) gives offline PDF import; it is shipped next to ClassBoard.exe.
+      - name: Download Poppler for Windows
+        shell: pwsh
+        run: |
+          $url = "https://github.com/oschwartz10612/poppler-windows/releases/download/v24.08.0-0/Release-24.08.0-0.zip"
+          Invoke-WebRequest -Uri $url -OutFile poppler.zip
+          Expand-Archive poppler.zip -DestinationPath poppler-extract
+          $exe = Get-ChildItem -Recurse -Filter pdftoppm.exe poppler-extract | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path poppler/bin | Out-Null
+          Copy-Item "$($exe.DirectoryName)\*" poppler/bin -Recurse
+          # Licence files that come with this Poppler build (Poppler and the libraries it uses).
+          New-Item -ItemType Directory -Force -Path poppler/licenses | Out-Null
+          $licences = Get-ChildItem -Recurse -File poppler-extract | Where-Object { $_.Name -match '^(LICEN[CS]E|COPYING)' }
+          foreach ($l in $licences) { Copy-Item $l.FullName ("poppler/licenses/" + $l.Directory.Name + "-" + $l.Name) }
+          "Copied $($licences.Count) licence file(s) from the Poppler build"
+          "$PWD\poppler\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # LibreOffice lets the PowerPoint (.ppt / .pptx) import tests run on Windows too.
+      - name: Install LibreOffice (for presentation import tests)
+        shell: pwsh
+        continue-on-error: true
+        run: choco install libreoffice-fresh --no-progress -y
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_FORCE_STDERR_LOGGING: 1
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "${{ github.workspace }}/ClassBoard"
+          cmake --install build --prefix $out
+          windeployqt --no-translations --no-system-d3d-compiler --no-opengl-sw --no-compiler-runtime "$out/bin/ClassBoard.exe"
+          Copy-Item poppler "$out/bin/poppler" -Recurse
+          # Visual C++ runtime next to the executable, so ClassBoard runs on a fresh Windows
+          # installation without a separate "VC++ Redistributable" download.
+          $crt = Get-ChildItem "$env:VCToolsRedistDir\x64" -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
+          if (-not $crt) { throw "Visual C++ runtime not found in $env:VCToolsRedistDir" }
+          Copy-Item "$($crt.FullName)\*.dll" "$out/bin"
+          Get-ChildItem "$out/bin" -Filter "*.dll" | Where-Object { $_.Name -match '^(msvcp|vcruntime|concrt)' } | ForEach-Object { $_.Name }
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          # The version comes from project(... VERSION x.y.z) in CMakeLists.txt.
+          $version = (Select-String -Path CMakeLists.txt -Pattern '^\s+VERSION\s+(\d+\.\d+\.\d+)').Matches[0].Groups[1].Value
+          & $iscc "/DAppVersion=$version" "/DSourceDir=${{ github.workspace }}\ClassBoard" "/O${{ github.workspace }}\installer-output" installer\ClassBoard.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+          $expected = "installer-output\ClassBoard-Setup-$version-x64.exe"
+          if (-not (Test-Path $expected)) { throw "Expected installer $expected was not produced" }
+          Get-ChildItem installer-output
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClassBoard-Setup-windows-x64
+          path: installer-output/*.exe
+
+      - name: Upload portable application
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClassBoard-windows-x64
+          path: ClassBoard
+
+
+  linux:
+    name: Linux (GCC, Qt 5.15)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qtbase5-dev qtbase5-dev-tools libqt5svg5-dev poppler-utils ninja-build
+          sudo apt-get install -y --no-install-recommends libreoffice-impress
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

@@ -1,0 +1,174 @@
+name: Release
+
+# Publishes a GitHub release with the Windows installer.
+#
+# Published releases are immutable: assets can only be added while a release is a draft. So
+# this workflow builds and tests first, attaches the installer to a DRAFT release, checks the
+# upload, and only then publishes the draft. Do not create the release on github.com first
+# (that publishes it, and its tag, before the installer exists). Start a release with either:
+#   * Actions -> Release -> Run workflow, version = the version in CMakeLists.txt (e.g. 0.3.0)
+#   * git tag v0.3.0 && git push origin v0.3.0
+# A version whose release (published or draft) or, for the manual trigger, whose tag already
+# exists is refused: existing releases and tags are never reused or overwritten.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.3.0 (must equal project(... VERSION) in CMakeLists.txt)"
+        required: true
+        type: string
+      title:
+        description: "Optional title after 'ClassBoard v<version> — ', e.g. Multi-Touch Update"
+        required: false
+        type: string
+      prerelease:
+        description: "Mark as a pre-release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One release run per version at a time; a second run waits and is then refused by the checks.
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check version and tag
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the version and refuse existing releases or tags
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          project=$(sed -n 's/^[[:space:]]\+VERSION[[:space:]]\+\([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' CMakeLists.txt | head -n1)
+          if [ -z "$project" ]; then
+            echo "::error::Could not read project(ClassBoard VERSION x.y.z) from CMakeLists.txt"
+            exit 1
+          fi
+          if [ "$EVENT" = "workflow_dispatch" ]; then version="${INPUT_VERSION#v}"; else version="${REF_NAME#v}"; fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$version' is not a release version like 0.3.0"
+            exit 1
+          fi
+          tag="v$version"
+          if [ "$version" != "$project" ]; then
+            echo "::error::Release $tag does not match the version in CMakeLists.txt ($project). Set project(ClassBoard VERSION $version) and push that first, so the app, the installer and the release carry the same version."
+            exit 1
+          fi
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+            --jq ".[] | select(.tag_name == \"$tag\") | \"'\(.name)' (draft: \(.draft))\"")
+          if [ -n "$existing" ]; then
+            echo "::error::A release for $tag already exists: $existing. A published release is immutable and cannot receive the installer, and existing releases are never reused. Release a new version instead (a leftover draft from a failed run may be deleted on github.com)."
+            exit 1
+          fi
+          if [ "$EVENT" = "workflow_dispatch" ] && git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "::error::Tag $tag already exists. The manual release creates its own tag and never reuses an existing one: choose a new version."
+            exit 1
+          fi
+          echo "Releasing $tag from $GITHUB_SHA"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and test
+    needs: check
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+
+  release:
+    name: Draft, upload, publish
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.check.outputs.version }}
+      TAG: ${{ needs.check.outputs.tag }}
+      SUBTITLE: ${{ inputs.title }}
+      PRERELEASE: ${{ inputs.prerelease && 'true' || 'false' }}
+    steps:
+      # Only the hand-written release notes are needed from the repository.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/release-notes
+
+      - name: Download the installer built and tested above
+        uses: actions/download-artifact@v4
+        with:
+          name: ClassBoard-Setup-windows-x64
+          path: dist
+
+      - name: Check the installer
+        id: asset
+        run: |
+          set -euo pipefail
+          asset="ClassBoard-Setup-$VERSION-x64.exe"
+          ls -l dist
+          if [ ! -f "dist/$asset" ] || [ "$(find dist -type f | wc -l)" -ne 1 ]; then
+            echo "::error::Expected exactly dist/$asset"
+            exit 1
+          fi
+          echo "name=$asset" >> "$GITHUB_OUTPUT"
+          echo "size=$(stat -c %s "dist/$asset")" >> "$GITHUB_OUTPUT"
+
+      - name: Create a draft release with the installer
+        env:
+          ASSET: ${{ steps.asset.outputs.name }}
+        run: |
+          set -euo pipefail
+          title="ClassBoard $TAG"
+          if [ -n "$SUBTITLE" ]; then title="$title — $SUBTITLE"; fi
+          flags=(--draft --target "$GITHUB_SHA" --title "$title" --generate-notes)
+          # .github/release-notes/v<version>.md, if present, describes the release above the
+          # generated list of changes.
+          notes=".github/release-notes/$TAG.md"
+          if [ -f "$notes" ]; then flags+=(--notes-file "$notes"); else echo "No $notes; using generated notes only"; fi
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); else flags+=(--latest); fi
+          gh release create "$TAG" "dist/$ASSET" --repo "$GITHUB_REPOSITORY" "${flags[@]}"
+
+      - name: Verify the upload, then publish
+        env:
+          ASSET: ${{ steps.asset.outputs.name }}
+          SIZE: ${{ steps.asset.outputs.size }}
+        run: |
+          set -euo pipefail
+          ids=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+            --jq ".[] | select(.tag_name == \"$TAG\" and .draft) | .id")
+          if [ "$(echo "$ids" | grep -c .)" -ne 1 ]; then
+            echo "::error::Expected exactly one draft release for $TAG, found: '$ids'"
+            exit 1
+          fi
+          id="$ids"
+          uploaded=$(gh api "repos/$GITHUB_REPOSITORY/releases/$id" \
+            --jq ".assets[] | select(.name == \"$ASSET\" and .state == \"uploaded\") | .size")
+          if [ "$uploaded" != "$SIZE" ]; then
+            echo "::error::$ASSET is not fully uploaded to the draft (size '$uploaded', expected $SIZE). The draft was not published."
+            exit 1
+          fi
+          # Publishing creates the tag (for the manual trigger) and makes the release immutable.
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -F draft=false --jq '.html_url'
+          published=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            --jq "select(.draft == false) | .assets[] | select(.name == \"$ASSET\") | .name")
+          if [ "$published" != "$ASSET" ]; then
+            echo "::error::$TAG was not published with $ASSET"
+            exit 1
+          fi
+          echo "Published $TAG with $ASSET"

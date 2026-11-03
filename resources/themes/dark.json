@@ -1,0 +1,50 @@
+{
+    "name": "Blackboard Dark",
+    "colors": {
+        "window": "#141816",
+        "ribbon": "#191d1b",
+        "ribbonBorder": "#2a302d",
+        "button": "#00000000",
+        "buttonHover": "#262c29",
+        "buttonPressed": "#313a35",
+        "buttonChecked": "#2a3a32",
+        "accent": "#5fd3a5",
+        "accentText": "#0d1a14",
+        "text": "#e9eeeb",
+        "textMuted": "#9aa7a0",
+        "textDisabled": "#56605b",
+        "popover": "#202624",
+        "popoverBorder": "#353e3a",
+        "popoverHeader": "#c9d3ce",
+        "shadow": "#000000",
+        "separator": "#2f3633",
+        "selection": "#4fb3ff",
+        "selectionFill": "#1a4fb3ff",
+        "handle": "#ffffff",
+        "danger": "#ef6a64",
+        "success": "#6fcf97",
+        "input": "#151a18",
+        "inputBorder": "#3a4440",
+        "scrim": "#99000000"
+    },
+    "metrics": {
+        "ribbonHeight": 78,
+        "ribbonButtonWidth": 78,
+        "iconSize": 26,
+        "ribbonIconSize": 28,
+        "cornerRadius": 12,
+        "popoverRadius": 18,
+        "popoverPadding": 16,
+        "popoverNotch": 12,
+        "spacing": 8,
+        "touchTarget": 56,
+        "fontSize": 15,
+        "smallFontSize": 12.5,
+        "titleFontSize": 17,
+        "handleSize": 14,
+        "handleHitSize": 44
+    },
+    "fonts": {
+        "families": ["Segoe UI", "Selawik", "Noto Sans", "Ubuntu", "DejaVu Sans"]
+    }
+}

@@ -1,0 +1,14 @@
+{
+    "templates": [
+        { "id": "blackboard", "name": "Blackboard", "kind": "blank", "background": "#ff1f2b26", "line": "#28ffffff", "accent": "#5affffff", "spacing": 40, "major": 5 },
+        { "id": "slate", "name": "Slate", "kind": "blank", "background": "#ff1b1f24", "line": "#28ffffff", "accent": "#5affffff", "spacing": 40, "major": 5 },
+        { "id": "whiteboard", "name": "Whiteboard", "kind": "blank", "background": "#fff7f7f2", "line": "#30000000", "accent": "#60000000", "spacing": 40, "major": 5 },
+        { "id": "grid", "name": "Grid", "kind": "grid", "background": "#ff1f2b26", "line": "#22ffffff", "accent": "#44ffffff", "spacing": 40, "major": 5 },
+        { "id": "dots", "name": "Dot grid", "kind": "dots", "background": "#ff1f2b26", "line": "#22ffffff", "accent": "#66ffffff", "spacing": 40, "major": 5 },
+        { "id": "ruled", "name": "Ruled paper", "kind": "ruled", "background": "#ff1f2b26", "line": "#33ffffff", "accent": "#80ef9a9a", "spacing": 56, "major": 0 },
+        { "id": "graph", "name": "Graph paper", "kind": "graph", "background": "#ff1f2b26", "line": "#18ffffff", "accent": "#40ffffff", "spacing": 8, "major": 5 },
+        { "id": "music", "name": "Music staff", "kind": "music", "background": "#ff1f2b26", "line": "#90ffffff", "accent": "#90ffffff", "spacing": 14, "major": 0 },
+        { "id": "coordinate", "name": "Coordinate plane", "kind": "coordinate", "background": "#ff1f2b26", "line": "#20ffffff", "accent": "#40ffffff", "spacing": 40, "major": 5 },
+        { "id": "white-grid", "name": "White grid", "kind": "grid", "background": "#fff7f7f2", "line": "#22000000", "accent": "#44000000", "spacing": 40, "major": 5 }
+    ]
+}
