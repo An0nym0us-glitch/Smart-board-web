@@ -35,6 +35,9 @@ AppSettings::AppSettings(QObject* parent)
 void AppSettings::store(const QString& key, const QVariant& value)
 {
     m_store.setValue(key, value);
+#if defined(Q_OS_WASM)
+    m_store.sync(); // written to the browser's storage by the page (see web/classboard-web.js)
+#endif
     emit changed();
 }
 

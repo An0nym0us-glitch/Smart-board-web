@@ -63,6 +63,8 @@ private:
     QString dataPath() const;
     QString metaPath() const;
     QByteArray metaJson() const;
+    /// Session of this tab (web version, which has no lock files).
+    static QString& activeSessionId();
 
     Document& m_doc;
     QString m_sessionId;

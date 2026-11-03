@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- 1 CSS pixel = 1 interface pixel; no browser zoom, so pinch and two-finger gestures reach the board. -->
+  <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="description" content="ClassBoard: a digital classroom whiteboard that runs in the browser.">
+  <meta name="theme-color" content="#141816">
+  <title>ClassBoard</title>
+  <link rel="icon" type="image/svg+xml" href="classboard.svg">
+  <link rel="manifest" href="manifest.webmanifest">
+  <style>
+    :root {
+      --bg: #141816;
+      --panel: #1f2b26;
+      --text: #e9eeeb;
+      --muted: #9aa7a0;
+      --accent: #5fd3a5;
+      --error: #ff8a7a;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      overscroll-behavior: none;
+    }
+    /* The canvas must have no border or padding, or pointer positions would be off. */
+    #qtcanvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border: 0 none;
+      display: block;
+      background: var(--bg);
+      outline: 0 solid transparent;
+      caret-color: transparent;
+      cursor: default;
+      touch-action: none;            /* every touch goes to the board */
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #loader {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+      z-index: 10;
+      transition: opacity 0.35s ease;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+    #loader.hidden { opacity: 0; pointer-events: none; }
+    .card {
+      max-width: 420px;
+      width: 100%;
+      text-align: center;
+    }
+    .card img { width: 96px; height: 96px; }
+    .card h1 { font-size: 28px; font-weight: 600; margin: 16px 0 4px; letter-spacing: 0.01em; }
+    .card p { margin: 4px 0; color: var(--muted); line-height: 1.5; }
+    #status { min-height: 1.5em; margin-top: 18px; }
+    #status.error { color: var(--error); }
+    .bar {
+      position: relative;
+      height: 4px;
+      margin: 14px auto 0;
+      width: 220px;
+      max-width: 100%;
+      border-radius: 2px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+    .bar::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: -40%;
+      width: 40%;
+      height: 100%;
+      border-radius: 2px;
+      background: var(--accent);
+      animation: slide 1.2s ease-in-out infinite;
+    }
+    #loader.failed .bar { display: none; }
+    @keyframes slide { to { left: 100%; } }
+    @media (prefers-reduced-motion: reduce) {
+      .bar::after { animation: none; left: 0; width: 100%; opacity: 0.6; }
+    }
+    a { color: var(--accent); }
+    /* Shown while files are dragged over the page. */
+    #drop {
+      position: fixed;
+      inset: 12px;
+      border: 3px dashed var(--accent);
+      border-radius: 16px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(20, 24, 22, 0.55);
+      color: var(--text);
+      font-size: 22px;
+      pointer-events: none;
+      z-index: 20;
+    }
+    body.dropping #drop { display: flex; }
+  </style>
+</head>
+<body>
+  <canvas id="qtcanvas" oncontextmenu="event.preventDefault()" contenteditable="true"></canvas>
+
+  <div id="loader" role="status" aria-live="polite">
+    <div class="card">
+      <img src="classboard.svg" alt="">
+      <h1>ClassBoard</h1>
+      <p>Digital classroom whiteboard</p>
+      <div class="bar" aria-hidden="true"></div>
+      <p id="status">Loading…</p>
+      <noscript><p class="error">ClassBoard needs JavaScript. Please enable it and reload the page.</p></noscript>
+    </div>
+  </div>
+
+  <div id="drop">Drop to open or insert</div>
+
+  <script src="classboard-web.js"></script>
+  <script src="qtloader.js"></script>
+  <script>
+    (function () {
+      var loader = document.getElementById("loader");
+      var status = document.getElementById("status");
+      var canvas = document.getElementById("qtcanvas");
+
+      function fail(text) {
+        loader.classList.remove("hidden");
+        loader.classList.add("failed");
+        status.classList.add("error");
+        status.textContent = text;
+      }
+
+      if (typeof WebAssembly !== "object") {
+        fail("This browser cannot run ClassBoard. Please use a current version of Chrome, Edge, Firefox or Safari.");
+        return;
+      }
+
+      var messages = {
+        "Downloading": "Downloading ClassBoard…",
+        "Compiling": "Starting…",
+        "Downloading/Compiling": "Downloading ClassBoard…",
+        "Running": "Starting…"
+      };
+
+      var qtLoader = QtLoader({
+        canvasElements: [canvas],
+        // Where Qt keeps settings and data: inside the folder kept in the browser's storage.
+        environment: {
+          XDG_CONFIG_HOME: "/classboard/config",
+          XDG_DATA_HOME: "/classboard/data"
+        },
+        showLoader: function (loaderStatus) {
+          loader.classList.remove("hidden");
+          status.textContent = messages[loaderStatus] || (loaderStatus + "…");
+        },
+        showError: function (errorText) {
+          fail("ClassBoard could not start: " + errorText);
+        },
+        showExit: function () {
+          var text = "ClassBoard stopped";
+          if (qtLoader.crashed)
+            text += " unexpectedly" + (qtLoader.exitText ? " (" + qtLoader.exitText + ")" : "");
+          fail(text + ". Reload the page to continue; unsaved work is restored from the autosave copy.");
+        },
+        showCanvas: function () {
+          loader.classList.add("hidden");
+          canvas.focus();
+        }
+      });
+
+      // Mount the browser storage before the application starts (see classboard-web.js).
+      Module.preRun = Module.preRun || [];
+      Module.preRun.push(function () { window.classboardWeb.mountStorage(); });
+
+      qtLoader.loadEmscriptenModule("classboard");
+    })();
+  </script>
+</body>
+</html>

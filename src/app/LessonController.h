@@ -44,6 +44,7 @@ public:
     bool isSaving() const { return m_saving; }
 
     void importLesson();
+    void importLessonFile(const QString& path);
     void importImages();
     void insertImageFiles(const QStringList& paths, const QPointF& pageCenter);
     /// PDF import: every PDF page becomes a page of the same size (file picker / given path).

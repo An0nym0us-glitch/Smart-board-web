@@ -42,7 +42,12 @@ int main(int argc, char* argv[])
         settings.setUiScale(parser.value(scale).toDouble());
 
     cb::MainWindow window(ui, settings);
+#if defined(Q_OS_WASM)
+    // The web version fills the browser page (without a window frame).
+    window.showFullScreen();
+#else
     window.show();
+#endif
     const QStringList args = parser.positionalArguments();
     window.startup(args.isEmpty() ? QString() : args.first());
 

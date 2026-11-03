@@ -12,15 +12,52 @@
 #include "storage/ProjectSerializer.h"
 #include "ui/Toast.h"
 #include "ui/UiContext.h"
+#include "core/Background.h"
+
+#if defined(Q_OS_WASM)
+#include "platform/WebPlatform.h"
+#include <QDir>
+#include <QRegularExpression>
+#include <emscripten/val.h>
+#endif
 
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QImageReader>
 #include <QStandardPaths>
-#include <QThread>
 
 namespace cb {
+
+#if defined(Q_OS_WASM)
+namespace {
+/// Stores a file picked in the browser in \a directory and returns its path (empty on failure).
+QString storeUpload(const QString& directory, const QString& fileName, const QByteArray& content, QString* error)
+{
+    QDir().mkpath(directory);
+    const QString path = directory + QLatin1Char('/') + QFileInfo(fileName).fileName();
+    if (!ProjectSerializer::writeFileAtomically(path, content, error))
+        return QString();
+    return path;
+}
+
+/// Asks for a lesson name with the browser's prompt. Returns an empty string when cancelled.
+QString askLessonName(const QString& message, const QString& suggested)
+{
+    emscripten::val answer = emscripten::val::global("window").call<emscripten::val>(
+        "prompt", message.toStdString(), suggested.toStdString());
+    if (answer.isNull() || answer.isUndefined())
+        return QString();
+    QString name = QString::fromStdString(answer.as<std::string>()).trimmed();
+    // Characters that are not allowed in file names on common systems.
+    static const QRegularExpression invalid(QStringLiteral("[\\\\/:*?\"<>|]"));
+    name.replace(invalid, QStringLiteral("-"));
+    if (name.endsWith(QStringLiteral(".classboard"), Qt::CaseInsensitive))
+        name.chop(11);
+    return name.trimmed();
+}
+} // namespace
+#endif
 
 LessonController::LessonController(const UiContext& ui, Document& doc, AppSettings& settings,
                                    TemplateLibrary& templates, Toast& toast, CanvasWidget& canvas, QWidget* window,
@@ -41,9 +78,21 @@ LessonController::LessonController(const UiContext& ui, Document& doc, AppSettin
     connect(m_autosave.get(), &AutosaveManager::failed, this, [this](const QString& error) {
         m_toast.showMessage(tr("Autosave failed: %1").arg(error), 5000);
     });
+#if defined(Q_OS_WASM)
+    // Closing or hiding the browser tab: write the recovery copy right away.
+    web::setFlushHandler([this]() {
+        if (m_doc.isModified())
+            m_autosave->saveNow();
+    });
+#endif
 }
 
-LessonController::~LessonController() = default;
+LessonController::~LessonController()
+{
+#if defined(Q_OS_WASM)
+    web::setFlushHandler({});
+#endif
+}
 
 QString LessonController::lessonFilter()
 {
@@ -57,6 +106,9 @@ QString LessonController::imageFilter()
 
 QString LessonController::startDirectory() const
 {
+#if defined(Q_OS_WASM)
+    return web::lessonsDirectory();
+#endif
     if (!m_settings.lastDirectory().isEmpty())
         return m_settings.lastDirectory();
     return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
@@ -99,9 +151,27 @@ void LessonController::newLesson()
 void LessonController::open()
 {
     confirmDiscard([this]() {
+#if defined(Q_OS_WASM)
+        // The browser's file picker; the lesson is also kept in the browser so it appears under
+        // "Recent lessons" next time.
+        QPointer<LessonController> self(this);
+        web::openFile(QStringLiteral(".classboard"), [self](const QString& fileName, const QByteArray& content) {
+            if (!self)
+                return;
+            QString error;
+            const QString path = storeUpload(web::lessonsDirectory(), fileName, content, &error);
+            if (path.isEmpty()) {
+                self->m_toast.showMessage(tr("Could not open the lesson: %1").arg(error), 6000);
+                return;
+            }
+            web::persist();
+            self->openFile(path);
+        });
+#else
         const QString path = QFileDialog::getOpenFileName(m_window, tr("Open lesson"), startDirectory(), lessonFilter());
         if (!path.isEmpty())
             openFile(path);
+#endif
     });
 }
 
@@ -113,12 +183,10 @@ void LessonController::openFile(const QString& path)
     auto error = std::make_shared<QString>();
     auto ok = std::make_shared<bool>(false);
     auto skipped = std::make_shared<int>(0);
-    QThread* worker = QThread::create([path, contents, error, ok, skipped]() {
-        *ok = ProjectSerializer::load(path, contents.get(), error.get(), skipped.get());
-    });
     QPointer<LessonController> self(this);
-    connect(worker, &QThread::finished, this, [self, worker, path, contents, error, ok, skipped]() {
-        worker->deleteLater();
+    runInBackground(this, [path, contents, error, ok, skipped]() {
+        *ok = ProjectSerializer::load(path, contents.get(), error.get(), skipped.get());
+    }, [self, path, contents, error, ok, skipped]() {
         if (!self)
             return;
         if (!*ok) {
@@ -135,11 +203,18 @@ void LessonController::openFile(const QString& path)
         else
             self->m_toast.showMessage(tr("Opened %1").arg(QFileInfo(path).completeBaseName()), 2000);
     });
-    worker->start();
 }
 
 QString LessonController::chooseSavePath()
 {
+#if defined(Q_OS_WASM)
+    // There is no folder to choose in a browser: the lesson is kept in the browser's storage under
+    // the name the user gives, and a copy is downloaded.
+    const QString name = askLessonName(tr("Save lesson as:"), m_doc.displayName());
+    if (name.isEmpty())
+        return QString();
+    return web::lessonsDirectory() + QLatin1Char('/') + name + QStringLiteral(".classboard");
+#endif
     QString suggested = m_doc.filePath();
     if (suggested.isEmpty())
         suggested = startDirectory() + QLatin1Char('/') + m_doc.displayName() + QStringLiteral(".classboard");
@@ -186,12 +261,10 @@ void LessonController::writeTo(const QString& path, std::function<void(bool)> do
     auto error = std::make_shared<QString>();
     auto ok = std::make_shared<bool>(false);
     m_toast.showProgress(tr("Saving"), -1);
-    QThread* worker = QThread::create([path, contents, error, ok]() {
-        *ok = ProjectSerializer::save(path, *contents, error.get());
-    });
     QPointer<LessonController> self(this);
-    connect(worker, &QThread::finished, this, [self, worker, path, error, ok, savedIndex, done]() {
-        worker->deleteLater();
+    runInBackground(this, [path, contents, error, ok]() {
+        *ok = ProjectSerializer::save(path, *contents, error.get());
+    }, [self, path, error, ok, savedIndex, done]() {
         if (!self)
             return;
         self->m_saving = false;
@@ -199,23 +272,52 @@ void LessonController::writeTo(const QString& path, std::function<void(bool)> do
             self->m_doc.setFilePath(path);
             self->m_doc.commands().setCleanIndex(savedIndex);
             self->m_settings.addRecentFile(path);
+#if defined(Q_OS_WASM)
+            // Kept in the browser's storage, and downloaded as a .classboard file.
+            QFile saved(path);
+            if (saved.open(QIODevice::ReadOnly))
+                web::download(saved.readAll(), QFileInfo(path).fileName());
+            web::persist();
+            self->m_toast.showMessage(tr("Saved %1 (in this browser and as a download)").arg(QFileInfo(path).fileName()), 3000);
+#else
             self->m_toast.showMessage(tr("Saved %1").arg(QFileInfo(path).fileName()), 1800);
+#endif
         } else {
             self->m_toast.showMessage(tr("Could not save: %1").arg(*error), 7000);
         }
         if (done)
             done(*ok);
     });
-    worker->start();
 }
 
 void LessonController::importLesson()
 {
+#if defined(Q_OS_WASM)
+    QPointer<LessonController> self(this);
+    web::openFile(QStringLiteral(".classboard"), [self](const QString& fileName, const QByteArray& content) {
+        if (!self)
+            return;
+        QString error;
+        const QString path = storeUpload(web::uploadDirectory(), fileName, content, &error);
+        if (path.isEmpty()) {
+            self->m_toast.showMessage(tr("Could not import: %1").arg(error), 6000);
+            return;
+        }
+        self->importLessonFile(path);
+        QFile::remove(path);
+    });
+#else
     const QString path = QFileDialog::getOpenFileName(m_window, tr("Import pages from a lesson"), startDirectory(),
                                                       lessonFilter());
     if (path.isEmpty())
         return;
     rememberDirectory(path);
+    importLessonFile(path);
+#endif
+}
+
+void LessonController::importLessonFile(const QString& path)
+{
     DocumentContents contents;
     QString error;
     if (!ProjectSerializer::load(path, &contents, &error)) {
@@ -238,6 +340,22 @@ void LessonController::importLesson()
 
 void LessonController::importImages()
 {
+#if defined(Q_OS_WASM)
+    QPointer<LessonController> self(this);
+    web::openFile(QStringLiteral("image/*,.svg"), [self](const QString& fileName, const QByteArray& content) {
+        if (!self)
+            return;
+        QString error;
+        const QString path = storeUpload(web::uploadDirectory(), fileName, content, &error);
+        if (path.isEmpty()) {
+            self->m_toast.showMessage(tr("Could not read: %1").arg(fileName), 5000);
+            return;
+        }
+        self->insertImageFiles({path}, self->m_canvas.viewCenterInPage());
+        QFile::remove(path);
+    });
+    return;
+#endif
     const QStringList paths = QFileDialog::getOpenFileNames(m_window, tr("Insert images"), startDirectory(), imageFilter());
     if (paths.isEmpty())
         return;
@@ -286,9 +404,24 @@ void LessonController::importPdf()
         m_toast.showMessage(PdfImporter::unavailableReason(), 8000);
         return;
     }
+#if defined(Q_OS_WASM)
+    QPointer<LessonController> self(this);
+    web::openFile(QStringLiteral(".pdf,application/pdf"), [self](const QString& fileName, const QByteArray& content) {
+        if (!self)
+            return;
+        QString error;
+        const QString path = storeUpload(web::uploadDirectory(), fileName, content, &error);
+        if (path.isEmpty()) {
+            self->m_toast.showMessage(tr("Could not read: %1").arg(fileName), 5000);
+            return;
+        }
+        self->importPdfFile(path);
+    });
+#else
     const QString path = QFileDialog::getOpenFileName(m_window, tr("Import PDF"), startDirectory(), tr("PDF documents (*.pdf)"));
     if (!path.isEmpty())
         importPdfFile(path);
+#endif
 }
 
 void LessonController::importPdfFile(const QString& path)
@@ -303,6 +436,10 @@ void LessonController::importPdfFile(const QString& path)
     m_toast.showProgress(tr("Converting %1").arg(QFileInfo(path).fileName()), -1);
     connect(importer, &PdfImporter::finished, this, [this, importer, path](const QVector<ImportedPage>& pages, const QString& error) {
         importer->deleteLater();
+#if defined(Q_OS_WASM)
+        if (path.startsWith(web::uploadDirectory()))
+            QFile::remove(path); // the copy of the file picked in the browser
+#endif
         finishImport(pages, error, QFileInfo(path).completeBaseName(), ImportSizing::Physical, tr("Import PDF"));
     });
     importer->start(path);
@@ -361,8 +498,13 @@ void LessonController::checkRecovery()
         return;
     const RecoveryInfo info = infos.first();
     const QString when = info.savedAt.isValid() ? info.savedAt.toString(QStringLiteral("dd MMM, HH:mm")) : QString();
+#if defined(Q_OS_WASM)
+    const QString question = tr("“%1” has unsaved work from your last visit (%2). Restore it?").arg(info.title, when);
+#else
+    const QString question = tr("ClassBoard closed unexpectedly. Restore “%1” (%2)?").arg(info.title, when);
+#endif
     m_toast.showActions(
-        tr("ClassBoard closed unexpectedly. Restore “%1” (%2)?").arg(info.title, when),
+        question,
         {{tr("Discard"),
           [this, info]() {
               AutosaveManager::discardRecovery(info);

@@ -1,7 +1,9 @@
 #include "ai/Recognition.h"
 
 #include <QDir>
+#if QT_CONFIG(library)
 #include <QPluginLoader>
+#endif
 
 namespace cb {
 
@@ -19,6 +21,7 @@ const EquationRecognizer* RecognizerRegistry::equationRecognizer() const
 int RecognizerRegistry::loadPlugins(const QString& directory)
 {
     int loaded = 0;
+#if QT_CONFIG(library)
     const QDir dir(directory);
     if (!dir.exists())
         return 0;
@@ -32,6 +35,9 @@ int RecognizerRegistry::loadPlugins(const QString& directory)
             ++loaded;
         }
     }
+#else
+    Q_UNUSED(directory); // plug-ins cannot be loaded (web version)
+#endif
     return loaded;
 }
 

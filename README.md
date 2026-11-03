@@ -3,6 +3,10 @@
 ClassBoard is an open-source digital whiteboard for large interactive classroom displays.
 It is written in C++17 with Qt 5.15, targets Windows 10/11, and works fully offline.
 
+**Use it in the browser:** <https://an0nym0us-glitch.github.io/Smart-board-web/>. The web
+version is the same application compiled to WebAssembly; lessons are saved in the browser and
+downloaded as `.classboard` files that also open in the desktop app. See [docs/WEB.md](docs/WEB.md).
+
 The board fills the screen. The most-used commands sit in a ribbon along the bottom, and the
 rest open as popovers attached to the button that opened them, so you stay on the board.
 
@@ -54,6 +58,12 @@ release, or the *ClassBoard-Setup-windows-x64* build artifact) and run it. It in
 ClassBoard like any other app: Start menu entry (plus the PDF user guide), desktop shortcut, `.classboard` files open
 with a double-click, and an uninstaller in Settings → Apps.
 
+### Web version
+
+The web version is built from the same sources with Qt 5.15.2 for WebAssembly and published on
+GitHub Pages by [`.github/workflows/web.yml`](.github/workflows/web.yml). To build it yourself,
+see [docs/WEB.md](docs/WEB.md#building-the-web-version).
+
 ## Documentation
 
 * [How to use ClassBoard (PDF)](docs/ClassBoard-User-Guide.pdf): illustrated guide for teachers and students
@@ -62,6 +72,7 @@ with a double-click, and an uninstaller in Settings → Apps.
 * [Architecture](docs/ARCHITECTURE.md): modules, data flow and design decisions
 * [File format](docs/FILE_FORMAT.md): the `.classboard` container and its JSON schema
 * [Building and packaging](docs/BUILDING.md)
+* [Web version](docs/WEB.md): saving in the browser, differences, building
 
 ## Project layout
 
@@ -80,7 +91,9 @@ src/
   export/     PDF, PPTX, PNG exporters, ZIP writer
   storage/    container format, serializer, autosave / recovery, PDF import
   ai/         shape recognizer, recogniser plug-in interfaces
+  platform/   browser integration of the web version (files, storage, PDF via pdf.js)
 tests/        Qt Test suites (core + UI integration)
+web/          web version: qmake project, page, browser script, packaging
 resources/    icons, themes, templates, application icon
 ```
 

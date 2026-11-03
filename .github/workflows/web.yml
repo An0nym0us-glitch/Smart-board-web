@@ -1,0 +1,85 @@
+name: Web version (GitHub Pages)
+
+# Builds the web version of ClassBoard (the same C++ sources compiled to WebAssembly with Qt for
+# WebAssembly) on every push and pull request, and publishes it on GitHub Pages from the default
+# branch. Pages must use "GitHub Actions" as its source (Settings → Pages → Build and deployment).
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Qt 5.15.2 for WebAssembly is built with Emscripten 1.39.8; other versions are not compatible.
+  QT_VERSION: '5.15.2'
+  EMSDK_VERSION: '1.39.8'
+
+jobs:
+  build:
+    name: Build (Qt for WebAssembly)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Emscripten ${{ env.EMSDK_VERSION }}
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+          actions-cache-folder: emsdk-cache
+
+      - name: Install Qt ${{ env.QT_VERSION }} for WebAssembly
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: wasm_32
+          cache: true
+
+      - name: Build
+        run: |
+          em++ --version | head -n 1
+          mkdir -p build-web
+          cd build-web
+          qmake ../web/classboard-web.pro
+          make -j"$(nproc)"
+          ls -la
+
+      - name: Assemble site
+        run: web/package.sh build-web site
+
+      - name: Upload web build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClassBoard-web
+          path: site
+          include-hidden-files: true
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

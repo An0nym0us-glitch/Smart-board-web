@@ -11,6 +11,10 @@
 #include <QJsonObject>
 #include <QStandardPaths>
 
+#if defined(Q_OS_WASM)
+#include "platform/WebPlatform.h"
+#endif
+
 namespace cb {
 
 TemplateLibrary::TemplateLibrary()
@@ -108,6 +112,9 @@ void TemplateLibrary::saveCustom() const
     root.insert(QStringLiteral("templates"), arr);
     ProjectSerializer::writeFileAtomically(customDir() + QStringLiteral("/custom.json"),
                                            QJsonDocument(root).toJson(QJsonDocument::Indented), nullptr);
+#if defined(Q_OS_WASM)
+    web::persist();
+#endif
 }
 
 bool TemplateLibrary::addCustom(TemplateSpec spec, const QByteArray& imageBytes, QString* error)

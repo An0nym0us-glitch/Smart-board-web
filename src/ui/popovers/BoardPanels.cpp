@@ -21,6 +21,10 @@
 #include "ui/widgets/SwatchGrid.h"
 
 #include <QHBoxLayout>
+
+#if defined(Q_OS_WASM)
+#include "platform/WebPlatform.h"
+#endif
 #include <QLineEdit>
 
 #include <cmath>
@@ -397,11 +401,15 @@ ViewPanel::ViewPanel(const AppServices& s, QWidget* parent)
     auto* fitPage = panel::pill(ui, QStringLiteral("fit-page"), tr("Fit page"), this, closeThen(sp, [sp]() { sp->canvas.fitPage(); }));
     auto* fitWidth = panel::pill(ui, QStringLiteral("fit-width"), tr("Fit width"), this, closeThen(sp, [sp]() { sp->canvas.fitWidth(); }));
     auto* full = panel::pill(ui, QStringLiteral("fullscreen"), tr("Full screen"), this, closeThen(sp, [sp]() {
+#if defined(Q_OS_WASM)
+        web::setBrowserFullScreen(!web::isBrowserFullScreen());
+#else
         QWidget* w = sp->canvas.window();
         if (w->isFullScreen())
             w->showMaximized();
         else
             w->showFullScreen();
+#endif
     }));
     layout->addWidget(panel::row(ui, {fitPage, fitWidth, full}, this));
     layout->addWidget(panel::hint(ui, tr("100 % is the lesson's own scale. Zoom changes only the view: sizes, "

@@ -2,3 +2,5 @@ build/
 *.user
 installer/Output/
 installer-output/
+build-web/
+site/

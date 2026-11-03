@@ -25,7 +25,8 @@ struct ImportedPage
 ///
 /// Uses Qt PDF when ClassBoard is built against it; otherwise the Poppler command line tool
 /// "pdftoppm" (on PATH or in a poppler/bin folder next to ClassBoard). The conversion runs
-/// asynchronously, completely offline, and never blocks the interface.
+/// asynchronously, completely offline, and never blocks the interface. The web version renders
+/// the pages in the browser with pdf.js.
 class PdfImporter : public QObject
 {
     Q_OBJECT
@@ -52,6 +53,7 @@ private:
     std::unique_ptr<QTemporaryDir> m_dir;
     QProcess* m_process = nullptr;
     int m_dpi = kDefaultDpi;
+    int m_webRequest = 0; ///< pdf.js request (web version)
 };
 
 /// Imports PowerPoint presentations (.ppt and .pptx). Slides are converted to PDF offline with an

@@ -1,5 +1,135 @@
 #include "storage/PdfImporter.h"
 
+#if defined(Q_OS_WASM)
+// Web version (WebAssembly): PDF pages are rendered in the browser with pdf.js. PowerPoint files
+// would need an office suite and cannot be converted in a browser.
+
+#include "platform/WebPlatform.h"
+
+#include <QCoreApplication>
+#include <QFile>
+#include <QFileInfo>
+#include <QTemporaryDir>
+#include <QTimer>
+
+#include <algorithm>
+
+namespace cb {
+
+namespace {
+QString tr(const char* s) { return QCoreApplication::translate("Import", s); }
+} // namespace
+
+PdfImporter::PdfImporter(QObject* parent)
+    : QObject(parent)
+{
+    qRegisterMetaType<QVector<cb::ImportedPage>>("QVector<cb::ImportedPage>");
+}
+
+PdfImporter::~PdfImporter()
+{
+    if (m_webRequest)
+        web::cancelPdf(m_webRequest);
+}
+
+QString PdfImporter::pdftoppmPath()
+{
+    return QString();
+}
+
+bool PdfImporter::isAvailable()
+{
+    return web::pdfRendererAvailable();
+}
+
+QString PdfImporter::unavailableReason()
+{
+    return tr("PDF import is not available in this browser.");
+}
+
+void PdfImporter::start(const QString& pdfPath, int dpi)
+{
+    m_dpi = std::clamp(dpi, 36, 600);
+    QFile file(pdfPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QTimer::singleShot(0, this, [this, pdfPath]() { emit finished({}, tr("The file %1 does not exist.").arg(pdfPath)); });
+        return;
+    }
+    const QByteArray data = file.readAll();
+    auto pages = std::make_shared<QVector<ImportedPage>>();
+    m_webRequest = web::renderPdf(
+        data, m_dpi,
+        [pages](const QByteArray& png, const QSize& pixels, const QSizeF& points) {
+            ImportedPage page;
+            page.encoded = png;
+            page.pixelSize = pixels;
+            page.sizeMm = points * 25.4 / 72.0;
+            pages->push_back(page);
+        },
+        [this, pages](const QString& error) {
+            m_webRequest = 0;
+            if (!error.isEmpty()) {
+                emit finished({}, error);
+                return;
+            }
+            if (pages->isEmpty()) {
+                emit finished({}, tr("The PDF does not contain any pages."));
+                return;
+            }
+            emit finished(*pages, QString());
+        });
+}
+
+void PdfImporter::finishProcess()
+{
+}
+
+PresentationImporter::PresentationImporter(QObject* parent)
+    : QObject(parent)
+{
+    qRegisterMetaType<QVector<cb::ImportedPage>>("QVector<cb::ImportedPage>");
+}
+
+PresentationImporter::~PresentationImporter() = default;
+
+QString PresentationImporter::libreOfficePath()
+{
+    return QString();
+}
+
+PresentationImporter::Converter PresentationImporter::availableConverter()
+{
+    return Converter::None;
+}
+
+bool PresentationImporter::isAvailable()
+{
+    return false;
+}
+
+QString PresentationImporter::unavailableReason()
+{
+    return tr("PowerPoint files cannot be converted in the web version. Save the presentation as PDF "
+              "(File → Save as → PDF in PowerPoint) and import the PDF, or use the desktop app.");
+}
+
+void PresentationImporter::start(const QString& path, int dpi)
+{
+    Q_UNUSED(path);
+    m_dpi = dpi;
+    QTimer::singleShot(0, this, [this]() { emit finished({}, unavailableReason()); });
+}
+
+void PresentationImporter::conversionFinished()
+{
+}
+
+} // namespace cb
+
+#else // desktop
+
+#include "storage/PdfImporter.h"
+
 #include <QBuffer>
 #include <QCoreApplication>
 #include <QDir>
@@ -331,3 +461,5 @@ void PresentationImporter::conversionFinished()
 }
 
 } // namespace cb
+
+#endif // Q_OS_WASM

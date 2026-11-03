@@ -19,7 +19,7 @@
 #include <QLineEdit>
 #include <QPainter>
 #include <QPointer>
-#include <QThread>
+#include "core/Background.h"
 
 namespace cb {
 
@@ -146,7 +146,7 @@ void MagicEquationPanel::startRecognition(bool relaxed)
     const int generation = ++m_generation;
     QPointer<MagicEquationPanel> self(this);
     // Recognition runs off the interface thread; the page is never touched here.
-    auto* worker = QThread::create([self, generation, ink, registered, relaxed]() {
+    runInBackground(this, [self, generation, ink, registered, relaxed]() {
         QVector<EquationCandidate> candidates;
         if (relaxed) {
             MathInkRecognizer::Options options;
@@ -167,8 +167,6 @@ void MagicEquationPanel::startRecognition(bool relaxed)
             },
             Qt::QueuedConnection);
     });
-    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
-    worker->start();
 }
 
 void MagicEquationPanel::showResult(const QString& latex, double confidence)

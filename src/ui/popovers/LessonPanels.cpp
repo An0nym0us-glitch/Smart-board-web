@@ -24,6 +24,10 @@
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileDialog>
+
+#if defined(Q_OS_WASM)
+#include "platform/WebPlatform.h"
+#endif
 #include <QFileInfo>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -124,7 +128,12 @@ LessonPanel::LessonPanel(const AppServices& s, QWidget* parent)
             layout->addWidget(b);
         }
     }
+#if defined(Q_OS_WASM)
+    QString status = s.doc.filePath().isEmpty() ? tr("Not saved yet")
+                                                : tr("Saved in this browser as “%1”").arg(QFileInfo(s.doc.filePath()).fileName());
+#else
     QString status = s.doc.filePath().isEmpty() ? tr("Not saved yet") : s.doc.filePath();
+#endif
     if (s.doc.isModified())
         status += QStringLiteral(" · ") + tr("unsaved changes (autosave protects them)");
     layout->addWidget(panel::hint(ui, status, this));
@@ -239,6 +248,21 @@ TemplatesPanel::TemplatesPanel(const AppServices& s, QWidget* parent)
 
     layout->addWidget(panel::section(ui, tr("Custom"), this));
     auto* fromImage = panel::pill(ui, QStringLiteral("image"), tr("Background from image"), this, [sp]() {
+#if defined(Q_OS_WASM)
+        web::openFile(QStringLiteral("image/*,.svg"), [sp](const QString& fileName, const QByteArray& content) {
+            TemplateSpec spec;
+            spec.name = QFileInfo(fileName).completeBaseName();
+            spec.background = QColor(255, 255, 255);
+            QString error;
+            if (!sp->templates.addCustom(spec, content, &error)) {
+                sp->toast.showMessage(tr("Could not add the template: %1").arg(error), 5000);
+                return;
+            }
+            web::persist();
+            sp->popovers.refresh();
+        });
+        return;
+#endif
         const QString path = QFileDialog::getOpenFileName(sp->canvas.window(), tr("Background image"),
                                                           sp->settings.lastDirectory(), LessonController::imageFilter());
         if (path.isEmpty())

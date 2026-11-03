@@ -1,0 +1,14 @@
+{
+  "name": "ClassBoard",
+  "short_name": "ClassBoard",
+  "description": "Digital classroom whiteboard",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#141816",
+  "theme_color": "#141816",
+  "icons": [
+    { "src": "classboard.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

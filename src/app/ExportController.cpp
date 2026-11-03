@@ -4,6 +4,13 @@
 #include "document/Document.h"
 #include "export/Exporters.h"
 #include "ui/Toast.h"
+#include "core/Background.h"
+
+#if defined(Q_OS_WASM)
+#include "platform/WebPlatform.h"
+#include <QDir>
+#include <QFile>
+#endif
 
 #include <QCoreApplication>
 #include <QDesktopServices>
@@ -11,7 +18,6 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QStandardPaths>
-#include <QThread>
 #include <QUrl>
 
 #include <algorithm>
@@ -87,18 +93,27 @@ void ExportController::exportPages(Format format, const QVector<int>& pagesIn)
         suffix = QStringLiteral("png");
         break;
     }
-    QString dir = m_settings.lastDirectory();
-    if (dir.isEmpty())
-        dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     QString base = m_doc.displayName();
     if (format == Format::Png && pages.size() == 1)
         base += QStringLiteral(" - page %1").arg(pages.first() + 1);
+#if defined(Q_OS_WASM)
+    // In the browser the export is written to memory and then downloaded.
+    const QString exportDir = QDir::tempPath() + QStringLiteral("/classboard-export");
+    QDir().mkpath(exportDir);
+    base.replace(QRegularExpression(QStringLiteral("[\\\\/:*?\"<>|]")), QStringLiteral("-"));
+    const QString path = exportDir + QLatin1Char('/') + base + QLatin1Char('.') + suffix;
+    Q_UNUSED(filter);
+#else
+    QString dir = m_settings.lastDirectory();
+    if (dir.isEmpty())
+        dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     QString path = QFileDialog::getSaveFileName(m_window, tr("Export"), dir + QLatin1Char('/') + base + QLatin1Char('.') + suffix, filter);
     if (path.isEmpty())
         return;
     if (!path.endsWith(QLatin1Char('.') + suffix, Qt::CaseInsensitive))
         path += QLatin1Char('.') + suffix;
     m_settings.setLastDirectory(QFileInfo(path).absolutePath());
+#endif
 
     // Snapshot on the GUI thread; the worker only sees immutable copies.
     std::shared_ptr<DocumentSnapshot> snapshot(m_doc.snapshot(pages).release());
@@ -120,7 +135,7 @@ void ExportController::exportPages(Format format, const QVector<int>& pagesIn)
         }, Qt::QueuedConnection);
         return true;
     };
-    QThread* worker = QThread::create([snapshot, path, format, error, ok, progress]() {
+    runInBackground(this, [snapshot, path, format, error, ok, progress]() {
         switch (format) {
         case Format::Pdf:
             *ok = PdfExporter::exportPages(*snapshot, path, error.get(), progress);
@@ -132,13 +147,27 @@ void ExportController::exportPages(Format format, const QVector<int>& pagesIn)
             *ok = ImageExporter::exportPage(*snapshot, 0, path, error.get());
             break;
         }
-    });
-    connect(worker, &QThread::finished, this, [self, worker, path, error, ok]() {
-        worker->deleteLater();
+    }, [self, path, error, ok]() {
         if (!self)
             return;
         self->m_busy = false;
         emit self->busyChanged(false);
+#if defined(Q_OS_WASM)
+        if (*ok) {
+            QFile file(path);
+            if (file.open(QIODevice::ReadOnly)) {
+                web::download(file.readAll(), QFileInfo(path).fileName());
+                file.close();
+                self->m_toast.showMessage(tr("Exported %1 (see your downloads)").arg(QFileInfo(path).fileName()), 4000);
+            } else {
+                self->m_toast.showMessage(tr("Export failed: %1").arg(file.errorString()), 7000);
+            }
+        } else {
+            self->m_toast.showMessage(tr("Export failed: %1").arg(*error), 7000);
+        }
+        QFile::remove(path);
+        return;
+#endif
         if (*ok) {
             self->m_toast.showActions(tr("Exported %1").arg(QFileInfo(path).fileName()),
                                       {{tr("Open"), [path]() { QDesktopServices::openUrl(QUrl::fromLocalFile(path)); }, true},
@@ -151,8 +180,7 @@ void ExportController::exportPages(Format format, const QVector<int>& pagesIn)
         } else {
             self->m_toast.showMessage(tr("Export failed: %1").arg(*error), 7000);
         }
-    });
-    worker->start(QThread::LowPriority);
+    }, true);
 }
 
 } // namespace cb

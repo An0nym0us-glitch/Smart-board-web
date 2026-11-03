@@ -64,6 +64,8 @@ public:
 protected:
     void closeEvent(QCloseEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
+    /// Opens or imports dropped files (lessons, PDFs, presentations, images). False if none applies.
+    bool openDroppedFiles(const QStringList& paths, const QPointF& pagePos);
     void changeEvent(QEvent* event) override;
 
 private:

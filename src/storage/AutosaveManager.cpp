@@ -2,6 +2,11 @@
 
 #include "document/Document.h"
 #include "storage/ProjectSerializer.h"
+#include "core/Background.h"
+
+#if defined(Q_OS_WASM)
+#include "platform/WebPlatform.h"
+#endif
 
 #include <QDir>
 #include <QFile>
@@ -10,7 +15,6 @@
 #include <QJsonObject>
 #include <QPointer>
 #include <QStandardPaths>
-#include <QThread>
 #include <QUuid>
 
 namespace cb {
@@ -21,9 +25,15 @@ AutosaveManager::AutosaveManager(Document& doc, QObject* parent)
     , m_sessionId(QUuid::createUuid().toString(QUuid::WithoutBraces))
 {
     QDir().mkpath(recoveryDirectory());
+#if defined(Q_OS_WASM)
+    // A browser tab cannot tell whether another tab is still running, so the web version uses no
+    // lock files: copies left by earlier visits are offered for recovery (see findRecoverable()).
+    activeSessionId() = m_sessionId;
+#else
     m_lock = std::make_unique<QLockFile>(recoveryDirectory() + QLatin1Char('/') + m_sessionId + QStringLiteral(".lock"));
     m_lock->setStaleLockTime(0);
     m_lock->tryLock(100);
+#endif
     m_timer.setInterval(60 * 1000);
     connect(&m_timer, &QTimer::timeout, this, &AutosaveManager::tick);
     // Once the lesson is saved normally the recovery copy is obsolete.
@@ -38,6 +48,12 @@ AutosaveManager::~AutosaveManager()
     m_timer.stop();
     if (m_lock)
         m_lock->unlock();
+}
+
+QString& AutosaveManager::activeSessionId()
+{
+    static QString id;
+    return id;
 }
 
 QString AutosaveManager::recoveryDirectory()
@@ -88,27 +104,27 @@ void AutosaveManager::tick()
     const QByteArray metaBytes = metaJson();
     auto result = std::make_shared<QString>();
     auto ok = std::make_shared<bool>(false);
-    QThread* worker = QThread::create([contents, data, meta, metaBytes, result, ok]() {
+    QPointer<AutosaveManager> self(this);
+    runInBackground(this, [contents, data, meta, metaBytes, result, ok]() {
         QString error;
         *ok = ProjectSerializer::save(data, *contents, &error)
             && ProjectSerializer::writeFileAtomically(meta, metaBytes, &error);
         *result = error;
-    });
-    QPointer<AutosaveManager> self(this);
-    connect(worker, &QThread::finished, this, [self, worker, revision, result, ok]() {
-        worker->deleteLater();
+    }, [self, revision, result, ok]() {
         if (!self)
             return;
         self->m_busy = false;
         if (*ok) {
             self->m_savedRevision = revision;
             self->m_hasCopy = true;
+#if defined(Q_OS_WASM)
+            web::persist();
+#endif
             emit self->saved(QDateTime::currentDateTime());
         } else {
             emit self->failed(*result);
         }
-    });
-    worker->start(QThread::LowPriority);
+    }, true);
 }
 
 bool AutosaveManager::saveNow()
@@ -120,6 +136,9 @@ bool AutosaveManager::saveNow()
     if (ok) {
         m_savedRevision = m_doc.revision();
         m_hasCopy = true;
+#if defined(Q_OS_WASM)
+        web::persist();
+#endif
     } else {
         emit failed(error);
     }
@@ -128,10 +147,17 @@ bool AutosaveManager::saveNow()
 
 void AutosaveManager::discard()
 {
-    QFile::remove(dataPath());
-    QFile::remove(metaPath());
+    const bool removedData = QFile::remove(dataPath());
+    const bool removedMeta = QFile::remove(metaPath());
+    const bool hadFiles = removedData || removedMeta;
     m_hasCopy = false;
     m_savedRevision = m_doc.revision();
+#if defined(Q_OS_WASM)
+    if (hadFiles)
+        web::persist();
+#else
+    Q_UNUSED(hadFiles);
+#endif
 }
 
 QVector<RecoveryInfo> AutosaveManager::findRecoverable()
@@ -141,12 +167,17 @@ QVector<RecoveryInfo> AutosaveManager::findRecoverable()
     const QStringList metas = dir.entryList({QStringLiteral("*.json")}, QDir::Files, QDir::Time);
     for (const QString& metaName : metas) {
         const QString id = QFileInfo(metaName).completeBaseName();
+#if defined(Q_OS_WASM)
+        if (id == activeSessionId())
+            continue;
+#else
         // A lock we can acquire belongs to a session that is no longer running.
         QLockFile lock(dir.filePath(id + QStringLiteral(".lock")));
         lock.setStaleLockTime(0);
         if (!lock.tryLock(0))
             continue;
         lock.unlock();
+#endif
         QFile f(dir.filePath(metaName));
         if (!f.open(QIODevice::ReadOnly))
             continue;
@@ -176,6 +207,9 @@ void AutosaveManager::discardRecovery(const RecoveryInfo& info)
     QFile::remove(info.dataPath);
     QFile::remove(dir.filePath(info.sessionId + QStringLiteral(".json")));
     QFile::remove(dir.filePath(info.sessionId + QStringLiteral(".lock")));
+#if defined(Q_OS_WASM)
+    web::persist();
+#endif
 }
 
 } // namespace cb

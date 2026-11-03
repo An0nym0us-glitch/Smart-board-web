@@ -33,6 +33,11 @@
 #include "ui/UiContext.h"
 #include "ui/widgets/TouchButton.h"
 
+#if defined(Q_OS_WASM)
+#include "platform/WebPlatform.h"
+#include <QPointer>
+#endif
+
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDragEnterEvent>
@@ -196,15 +201,31 @@ MainWindow::MainWindow(UiContext& ui, AppSettings& settings, QWidget* parent)
     updateRibbonState();
     updateTitle();
 
+#if defined(Q_OS_WASM)
+    // Files dragged from the computer onto the browser page.
+    web::setDropHandler([this](const QStringList& paths, const QPoint& globalPos) {
+        const QPointF pagePos = m_canvas->view().viewToPage(QPointF(m_canvas->mapFromGlobal(globalPos)));
+        if (!openDroppedFiles(paths, pagePos))
+            m_toast->showMessage(tr("ClassBoard cannot open these files."), 3000);
+        for (const QString& path : paths)
+            if (path.startsWith(web::uploadDirectory()) && isImageFile(path))
+                QFile::remove(path); // already inserted
+    });
+#else
     const QByteArray geometry = m_settings.windowGeometry();
     if (!geometry.isEmpty())
         restoreGeometry(geometry);
     else
         resize(1440, 900);
+#endif
 }
 
 MainWindow::~MainWindow()
 {
+#if defined(Q_OS_WASM)
+    web::setDropHandler({});
+    web::setFullScreenChangedHandler({});
+#endif
     // Tear down controllers before the widgets and the document they reference.
     m_services.reset();
     m_popovers.reset();
@@ -266,7 +287,17 @@ void MainWindow::buildRibbon()
 
     m_ribbon->setPenColor(m_tools->penColor());
     m_ribbon->setZoomPercent(qRound(m_canvas->zoom() * 100));
+#if defined(Q_OS_WASM)
+    // The web version always fills the browser page; "full screen" is the browser's full screen.
+    m_ribbon->setFullScreen(web::isBrowserFullScreen());
+    QPointer<Ribbon> ribbon(m_ribbon);
+    web::setFullScreenChangedHandler([ribbon](bool on) {
+        if (ribbon)
+            ribbon->setFullScreen(on);
+    });
+#else
     m_ribbon->setFullScreen(isFullScreen());
+#endif
     updateRibbonState();
     updateToolChip();
 }
@@ -362,6 +393,10 @@ void MainWindow::addPage()
 
 void MainWindow::toggleFullScreen()
 {
+#if defined(Q_OS_WASM)
+    web::setBrowserFullScreen(!web::isBrowserFullScreen());
+    return;
+#endif
     if (isFullScreen())
         showMaximized();
     else
@@ -371,8 +406,10 @@ void MainWindow::toggleFullScreen()
 void MainWindow::changeEvent(QEvent* event)
 {
     QMainWindow::changeEvent(event);
+#if !defined(Q_OS_WASM)
     if (event->type() == QEvent::WindowStateChange && m_ribbon)
         m_ribbon->setFullScreen(isFullScreen());
+#endif
 }
 
 void MainWindow::applyUiScale(qreal scale)
@@ -513,8 +550,10 @@ void MainWindow::createShortcuts()
 void MainWindow::startup(const QString& fileToOpen)
 {
     applyUiScale(m_settings.uiScale());
+#if !defined(Q_OS_WASM)
     if (m_settings.fullScreen())
         showFullScreen();
+#endif
     if (!fileToOpen.isEmpty() && QFileInfo::exists(fileToOpen)) {
         m_lesson->openFile(fileToOpen);
     } else {
@@ -534,38 +573,47 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event)
         } else if (event->type() == QEvent::Drop) {
             auto* e = static_cast<QDropEvent*>(event);
             const QPointF pagePos = m_canvas->view().viewToPage(e->posF());
-            QStringList images;
-            QString lesson;
-            QString pdf;
-            QString presentation;
-            for (const QUrl& url : e->mimeData()->urls()) {
-                const QString path = url.toLocalFile();
-                const QString suffix = QFileInfo(path).suffix().toLower();
-                if (suffix == QLatin1String("classboard"))
-                    lesson = path;
-                else if (suffix == QLatin1String("pdf"))
-                    pdf = path;
-                else if (suffix == QLatin1String("pptx") || suffix == QLatin1String("ppt") || suffix == QLatin1String("ppsx")
-                         || suffix == QLatin1String("pps") || suffix == QLatin1String("odp"))
-                    presentation = path;
-                else if (isImageFile(path))
-                    images << path;
-            }
-            if (!pdf.isEmpty())
-                m_lesson->importPdfFile(pdf);
-            else if (!presentation.isEmpty())
-                m_lesson->importPresentationFile(presentation);
-            else if (!images.isEmpty())
-                m_lesson->insertImageFiles(images, pagePos);
-            else if (!lesson.isEmpty())
-                m_lesson->confirmDiscard([this, lesson]() { m_lesson->openFile(lesson); });
-            else if (e->mimeData()->hasImage())
+            QStringList paths;
+            for (const QUrl& url : e->mimeData()->urls())
+                paths << url.toLocalFile();
+            if (!openDroppedFiles(paths, pagePos) && e->mimeData()->hasImage())
                 m_edit->insertMimeData(e->mimeData(), pagePos, false);
             e->acceptProposedAction();
             return true;
         }
     }
     return QMainWindow::eventFilter(watched, event);
+}
+
+bool MainWindow::openDroppedFiles(const QStringList& paths, const QPointF& pagePos)
+{
+    QStringList images;
+    QString lesson;
+    QString pdf;
+    QString presentation;
+    for (const QString& path : paths) {
+        const QString suffix = QFileInfo(path).suffix().toLower();
+        if (suffix == QLatin1String("classboard"))
+            lesson = path;
+        else if (suffix == QLatin1String("pdf"))
+            pdf = path;
+        else if (suffix == QLatin1String("pptx") || suffix == QLatin1String("ppt") || suffix == QLatin1String("ppsx")
+                 || suffix == QLatin1String("pps") || suffix == QLatin1String("odp"))
+            presentation = path;
+        else if (isImageFile(path))
+            images << path;
+    }
+    if (!pdf.isEmpty())
+        m_lesson->importPdfFile(pdf);
+    else if (!presentation.isEmpty())
+        m_lesson->importPresentationFile(presentation);
+    else if (!images.isEmpty())
+        m_lesson->insertImageFiles(images, pagePos);
+    else if (!lesson.isEmpty())
+        m_lesson->confirmDiscard([this, lesson]() { m_lesson->openFile(lesson); });
+    else
+        return false;
+    return true;
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)

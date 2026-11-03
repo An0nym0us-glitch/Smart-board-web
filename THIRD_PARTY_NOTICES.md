@@ -43,3 +43,17 @@ licence. The full licence texts are in the `licenses` folder next to this file.
 
 * **Microsoft PowerPoint** or **LibreOffice**, if installed, convert PowerPoint presentations
   for import. They are not part of ClassBoard and are used under their own licences.
+
+## Web version
+
+The web version (GitHub Pages, see `docs/WEB.md`) contains:
+
+* **Qt 5.15.2 for WebAssembly** under the **GNU Lesser General Public License version 3**.
+  In a browser Qt is linked statically into `classboard.wasm`. The complete source code of
+  ClassBoard and the build instructions (`docs/WEB.md`, `web/classboard-web.pro`) are public, so
+  the application can be rebuilt and relinked with a modified Qt. Qt for WebAssembly bundles the
+  DejaVu and Bitstream Vera fonts (free licences, see
+  <https://doc.qt.io/qt-5/licenses-used-in-qt.html>).
+* **pdf.js** 3.11.174 (`pdfjs/`, used for PDF import), copyright © Mozilla and the pdf.js
+  contributors, under the **Apache License 2.0** (`pdfjs/LICENSE`). Source:
+  <https://github.com/mozilla/pdf.js>.
